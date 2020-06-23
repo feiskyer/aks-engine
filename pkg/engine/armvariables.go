@@ -562,6 +562,9 @@ func getK8sMasterVars(cs *api.ContainerService) (map[string]interface{}, error) 
 		masterVars["appGwICIdentityId"] = "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('appGwICIdentityName'))]"
 	}
 
+	// TODO: always set as true for test only
+	masterVars["enableHostsConfigAgent"] = true
+
 	return masterVars, nil
 }
 

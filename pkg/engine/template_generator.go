@@ -511,8 +511,10 @@ func getContainerServiceFuncMap(cs *api.ContainerService) template.FuncMap {
 				kubernetesWindowsLogsCleanupPS1,
 				kubernetesWindowsNodeResetPS1,
 				kubernetesWindowsOpenSSHFunctionPS1,
+				kubernetesWindowsHostsConfigAgentFunctionsPS1,
 				kubeletStartPS1,
 				kubeproxyStartPS1,
+				hostsConfigAgentPS1,
 			}
 
 			// Create a buffer, new zip

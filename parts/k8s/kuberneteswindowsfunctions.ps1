@@ -205,6 +205,7 @@ function Register-NodeResetScriptTask {
 
     (Get-Content 'c:\AzureData\k8s\windowsnodereset.ps1') |
     Foreach-Object { $_ -replace '{{CsiProxyEnabled}}', $global:EnableCsiProxy } |
+    Foreach-Object { $_ -replace '{{EnableHostsConfigAgent}}', $global:EnableHostsConfigAgent } |
     Foreach-Object { $_ -replace '{{MasterSubnet}}', $global:MasterSubnet } |
     Foreach-Object { $_ -replace '{{NetworkMode}}', $global:NetworkMode } |
     Foreach-Object { $_ -replace '{{NetworkPlugin}}', $global:NetworkPlugin } |
