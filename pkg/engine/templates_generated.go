@@ -109,6 +109,7 @@
 // ../../parts/k8s/cloud-init/jumpboxcustomdata.yml
 // ../../parts/k8s/cloud-init/masternodecustomdata.yml
 // ../../parts/k8s/cloud-init/nodecustomdata.yml
+// ../../parts/k8s/hostsconfigagent.ps1
 // ../../parts/k8s/kubeconfig.json
 // ../../parts/k8s/kubeletstart.ps1
 // ../../parts/k8s/kubeproxystart.ps1
@@ -126,6 +127,7 @@
 // ../../parts/k8s/windowsconfigfunc.ps1
 // ../../parts/k8s/windowscontainerdfunc.ps1
 // ../../parts/k8s/windowscsiproxyfunc.ps1
+// ../../parts/k8s/windowshostsconfigagentfunc.ps1
 // ../../parts/k8s/windowsinstallopensshfunc.ps1
 // ../../parts/k8s/windowskubeletfunc.ps1
 // ../../parts/k8s/windowslogscleanup.ps1
@@ -22265,6 +22267,82 @@ func k8sCloudInitNodecustomdataYml() (*asset, error) {
 	return a, nil
 }
 
+var _k8sHostsconfigagentPs1 = []byte(`$Global:ClusterConfiguration = ConvertFrom-Json ((Get-Content "c:\k\kubeclusterconfig.json" -ErrorAction Stop) | out-string)
+$clusterFQDN = $Global:ClusterConfiguration.Kubernetes.ControlPlane.IpAddress
+$hostsFile="C:\Windows\System32\drivers\etc\hosts"
+$retryDelaySeconds = 15
+
+# TODO: test only, remove it after test
+$clusterFQDN = "$clusterFQDN.local"
+
+# Dot-source scripts with functions that are called in this script
+. c:\AzureData\k8s\kuberneteswindowsfunctions.ps1
+
+function Get-APIServer-IPAddress
+{
+    $uri = "http://169.254.169.254/metadata/instance/compute/tags?api-version=2019-03-11&format=text"
+    $response = Retry-Command -Command "Invoke-RestMethod" -Args @{Uri=$uri; Method="Get"; ContentType="application/json"; Headers=@{"Metadata"="true"}} -Retries 3 -RetryDelaySeconds 5
+
+    if(!$response) {
+        return ""
+    }
+
+    foreach ($tag in $response.Split(";"))
+    {
+        $values = $tag.Split(":")
+        if ($values.Length -ne 2)
+        {
+            return ""
+        }
+
+        if ($values[0] -eq "aksAPIServerIPAddress")
+        {
+            return $values[1]
+        }
+    }
+
+    return ""
+}
+
+while ($true)
+{
+    $clusterIP = Get-APIServer-IPAddress
+    Write-Log "Get current APIServer IP address: $clusterIP"
+
+    if ($clusterIP -eq "") {
+        Write-Log "Doesn't find clusterIP from aksAPIServerIPAddress tag, skipping"
+        Start-Sleep $retryDelaySeconds
+        continue
+    }
+
+    $hostsContent=Get-Content -Path $hostsFile -Encoding UTF8
+    if ($hostsContent -match "$clusterIP $clusterFQDN") {
+        Write-Log "$clusterFQDN has already been set to $clusterIP"
+    } else {
+        $hostsContent -notmatch "$clusterFQDN" | Out-File $hostsFile -Encoding UTF8
+        Add-Content -Path $hostsFile -Value "$clusterIP $clusterFQDN" -Encoding UTF8
+        Write-Log "Updated $clusterFQDN to $clusterIP"
+    }
+
+    Start-Sleep $retryDelaySeconds
+}
+`)
+
+func k8sHostsconfigagentPs1Bytes() ([]byte, error) {
+	return _k8sHostsconfigagentPs1, nil
+}
+
+func k8sHostsconfigagentPs1() (*asset, error) {
+	bytes, err := k8sHostsconfigagentPs1Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	info := bindataFileInfo{name: "k8s/hostsconfigagent.ps1", size: 0, mode: os.FileMode(0), modTime: time.Unix(0, 0)}
+	a := &asset{bytes: bytes, info: info}
+	return a, nil
+}
+
 var _k8sKubeconfigJson = []byte(`    {
         "apiVersion": "v1",
         "clusters": [
@@ -23482,6 +23560,7 @@ function Register-NodeResetScriptTask {
 
     (Get-Content 'c:\AzureData\k8s\windowsnodereset.ps1') |
     Foreach-Object { $_ -replace '{{CsiProxyEnabled}}', $global:EnableCsiProxy } |
+    Foreach-Object { $_ -replace '{{EnableHostsConfigAgent}}', $global:EnableHostsConfigAgent } |
     Foreach-Object { $_ -replace '{{MasterSubnet}}', $global:MasterSubnet } |
     Foreach-Object { $_ -replace '{{NetworkMode}}', $global:NetworkMode } |
     Foreach-Object { $_ -replace '{{NetworkPlugin}}', $global:NetworkPlugin } |
@@ -23734,6 +23813,9 @@ $global:TelemetryKey = "{{WrapAsVariable "applicationInsightsKey" }}";
 $global:EnableCsiProxy = [System.Convert]::ToBoolean("{{WrapAsVariable "windowsEnableCSIProxy" }}");
 $global:CsiProxyUrl = "{{WrapAsVariable "windowsCSIProxyURL" }}";
 
+# Hosts Config Agent settings
+$global:EnableHostsConfigAgent = [System.Convert]::ToBoolean("{{WrapAsVariable "enableHostsConfigAgent" }}");
+
 # Base64 representation of ZIP archive
 $zippedFiles = "{{ GetKubernetesWindowsAgentFunctions }}"
 
@@ -23750,6 +23832,7 @@ Expand-Archive scripts.zip -DestinationPath "C:\\AzureData\\"
 . c:\AzureData\k8s\windowscsiproxyfunc.ps1
 . c:\AzureData\k8s\windowsinstallopensshfunc.ps1
 . c:\AzureData\k8s\windowscontainerdfunc.ps1
+. c:\AzureData\k8s\windowshostsconfigagentfunc.ps1
 
 $useContainerD = ($global:ContainerRuntime -eq "containerd")
 $global:KubeClusterConfigPath = "c:\k\kubeclusterconfig.json"
@@ -23912,6 +23995,11 @@ try
             -AgentKey $AgentKey ` + "`" + `
             -AgentCertificate $global:AgentCertificate
 
+        if ($global:EnableHostsConfigAgent) {
+            Write-Log "Starting hosts config agent"
+            New-HostsConfigService
+        }
+
         Write-Log "Create the Pause Container kubletwin/pause"
         $infraContainerTimer = [System.Diagnostics.Stopwatch]::StartNew()
         New-InfraContainer -KubeDir $global:KubeDir -ContainerRuntime $global:ContainerRuntime
@@ -24004,6 +24092,10 @@ try
         Out-File "c:\k\kubeletstart.ps1"
         (Get-Content "c:\AzureData\k8s\kubeproxystart.ps1") |
         Out-File "c:\k\kubeproxystart.ps1"
+
+        # Output hosts config agent scripts
+        (Get-Content "c:\AzureData\k8s\hostsconfigagent.ps1") |
+        Out-File "c:\k\hostsconfigagent.ps1"
 
         if (Test-Path $CacheDir)
         {
@@ -25238,6 +25330,44 @@ func k8sWindowscsiproxyfuncPs1() (*asset, error) {
 	return a, nil
 }
 
+var _k8sWindowshostsconfigagentfuncPs1 = []byte(`function New-HostsConfigService {
+    $HostsConfigParameters = [io.path]::Combine($KubeDir, "hostsconfigagent.ps1")
+
+    & "$KubeDir\nssm.exe" install hosts-config-agent C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppDirectory "$KubeDir" | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppParameters $HostsConfigParameters | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppRestartDelay 5000 | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent Description hosts-config-agent | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent Start SERVICE_DEMAND_START | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent ObjectName LocalSystem | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent Type SERVICE_WIN32_OWN_PROCESS | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppThrottle 1500 | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppStdout "$KubeDir\hosts-config-agent.log" | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppStderr "$KubeDir\hosts-config-agent.err.log" | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppStdoutCreationDisposition 4 | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppStderrCreationDisposition 4 | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppRotateFiles 1 | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppRotateOnline 1 | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppRotateSeconds 86400 | RemoveNulls
+    & "$KubeDir\nssm.exe" set hosts-config-agent AppRotateBytes 10485760 | RemoveNulls
+}
+`)
+
+func k8sWindowshostsconfigagentfuncPs1Bytes() ([]byte, error) {
+	return _k8sWindowshostsconfigagentfuncPs1, nil
+}
+
+func k8sWindowshostsconfigagentfuncPs1() (*asset, error) {
+	bytes, err := k8sWindowshostsconfigagentfuncPs1Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	info := bindataFileInfo{name: "k8s/windowshostsconfigagentfunc.ps1", size: 0, mode: os.FileMode(0), modTime: time.Unix(0, 0)}
+	a := &asset{bytes: bytes, info: info}
+	return a, nil
+}
+
 var _k8sWindowsinstallopensshfuncPs1 = []byte(`function
 Install-OpenSSH {
     Param(
@@ -25638,6 +25768,9 @@ New-NSSMService {
     if ($global:EnableCsiProxy) {
         $kubeletDependOnServices += " csi-proxy"
     }
+    if ($global:EnableHostsConfigAgent) {
+        $kubeletDependOnServices += " hosts-config-agent"
+    }
 
     # setup kubelet
     & "$KubeDir\nssm.exe" install Kubelet C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe | RemoveNulls
@@ -25796,6 +25929,11 @@ Stop-Service kubelet
 if ($global:CsiProxyEnabled) {
     Write-Log "Stopping csi-proxy service"
     Stop-Service csi-proxy
+}
+
+if ($global:EnableHostsConfigAgent) {
+    Write-Log "Stopping hosts-config-agent service"
+    Stop-Service hosts-config-agent
 }
 
 #
@@ -29412,6 +29550,7 @@ var _bindata = map[string]func() (*asset, error){
 	"k8s/cloud-init/jumpboxcustomdata.yml":                               k8sCloudInitJumpboxcustomdataYml,
 	"k8s/cloud-init/masternodecustomdata.yml":                            k8sCloudInitMasternodecustomdataYml,
 	"k8s/cloud-init/nodecustomdata.yml":                                  k8sCloudInitNodecustomdataYml,
+	"k8s/hostsconfigagent.ps1":                                           k8sHostsconfigagentPs1,
 	"k8s/kubeconfig.json":                                                k8sKubeconfigJson,
 	"k8s/kubeletstart.ps1":                                               k8sKubeletstartPs1,
 	"k8s/kubeproxystart.ps1":                                             k8sKubeproxystartPs1,
@@ -29429,6 +29568,7 @@ var _bindata = map[string]func() (*asset, error){
 	"k8s/windowsconfigfunc.ps1":                                          k8sWindowsconfigfuncPs1,
 	"k8s/windowscontainerdfunc.ps1":                                      k8sWindowscontainerdfuncPs1,
 	"k8s/windowscsiproxyfunc.ps1":                                        k8sWindowscsiproxyfuncPs1,
+	"k8s/windowshostsconfigagentfunc.ps1":                                k8sWindowshostsconfigagentfuncPs1,
 	"k8s/windowsinstallopensshfunc.ps1":                                  k8sWindowsinstallopensshfuncPs1,
 	"k8s/windowskubeletfunc.ps1":                                         k8sWindowskubeletfuncPs1,
 	"k8s/windowslogscleanup.ps1":                                         k8sWindowslogscleanupPs1,
@@ -29614,6 +29754,7 @@ var _bintree = &bintree{nil, map[string]*bintree{
 			"masternodecustomdata.yml": {k8sCloudInitMasternodecustomdataYml, map[string]*bintree{}},
 			"nodecustomdata.yml":       {k8sCloudInitNodecustomdataYml, map[string]*bintree{}},
 		}},
+		"hostsconfigagent.ps1":           {k8sHostsconfigagentPs1, map[string]*bintree{}},
 		"kubeconfig.json":                {k8sKubeconfigJson, map[string]*bintree{}},
 		"kubeletstart.ps1":               {k8sKubeletstartPs1, map[string]*bintree{}},
 		"kubeproxystart.ps1":             {k8sKubeproxystartPs1, map[string]*bintree{}},
@@ -29627,16 +29768,17 @@ var _bintree = &bintree{nil, map[string]*bintree{
 			"kubernetesmaster-kube-controller-manager.yaml":  {k8sManifestsKubernetesmasterKubeControllerManagerYaml, map[string]*bintree{}},
 			"kubernetesmaster-kube-scheduler.yaml":           {k8sManifestsKubernetesmasterKubeSchedulerYaml, map[string]*bintree{}},
 		}},
-		"windowsazurecnifunc.ps1":       {k8sWindowsazurecnifuncPs1, map[string]*bintree{}},
-		"windowsazurecnifunc.tests.ps1": {k8sWindowsazurecnifuncTestsPs1, map[string]*bintree{}},
-		"windowscnifunc.ps1":            {k8sWindowscnifuncPs1, map[string]*bintree{}},
-		"windowsconfigfunc.ps1":         {k8sWindowsconfigfuncPs1, map[string]*bintree{}},
-		"windowscontainerdfunc.ps1":     {k8sWindowscontainerdfuncPs1, map[string]*bintree{}},
-		"windowscsiproxyfunc.ps1":       {k8sWindowscsiproxyfuncPs1, map[string]*bintree{}},
-		"windowsinstallopensshfunc.ps1": {k8sWindowsinstallopensshfuncPs1, map[string]*bintree{}},
-		"windowskubeletfunc.ps1":        {k8sWindowskubeletfuncPs1, map[string]*bintree{}},
-		"windowslogscleanup.ps1":        {k8sWindowslogscleanupPs1, map[string]*bintree{}},
-		"windowsnodereset.ps1":          {k8sWindowsnoderesetPs1, map[string]*bintree{}},
+		"windowsazurecnifunc.ps1":         {k8sWindowsazurecnifuncPs1, map[string]*bintree{}},
+		"windowsazurecnifunc.tests.ps1":   {k8sWindowsazurecnifuncTestsPs1, map[string]*bintree{}},
+		"windowscnifunc.ps1":              {k8sWindowscnifuncPs1, map[string]*bintree{}},
+		"windowsconfigfunc.ps1":           {k8sWindowsconfigfuncPs1, map[string]*bintree{}},
+		"windowscontainerdfunc.ps1":       {k8sWindowscontainerdfuncPs1, map[string]*bintree{}},
+		"windowscsiproxyfunc.ps1":         {k8sWindowscsiproxyfuncPs1, map[string]*bintree{}},
+		"windowshostsconfigagentfunc.ps1": {k8sWindowshostsconfigagentfuncPs1, map[string]*bintree{}},
+		"windowsinstallopensshfunc.ps1":   {k8sWindowsinstallopensshfuncPs1, map[string]*bintree{}},
+		"windowskubeletfunc.ps1":          {k8sWindowskubeletfuncPs1, map[string]*bintree{}},
+		"windowslogscleanup.ps1":          {k8sWindowslogscleanupPs1, map[string]*bintree{}},
+		"windowsnodereset.ps1":            {k8sWindowsnoderesetPs1, map[string]*bintree{}},
 	}},
 	"masteroutputs.t": {masteroutputsT, map[string]*bintree{}},
 	"masterparams.t":  {masterparamsT, map[string]*bintree{}},
